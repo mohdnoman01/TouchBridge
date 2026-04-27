@@ -1,0 +1,13 @@
+{
+  "actions": [
+    "MOVE_FORWARD",
+    "MOVE_BACK",
+    "MOVE_LEFT",
+    "MOVE_RIGHT",
+    "FIRE"
+  ],
+  "states": [
+    "DOWN",
+    "UP"
+  ]
+}
