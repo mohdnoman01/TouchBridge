@@ -46,6 +46,7 @@ fun ControlScreen() {
     val socketClient = remember { SocketClient(ip, 12345) }
     
     var isFreeView by remember { mutableStateOf(false) }
+    var isInventoryOpen by remember { mutableStateOf(false) }
     var isGyroEnabled by remember { mutableStateOf(false) }
     val gyroManager = remember { GyroscopeManager(context, socketClient) }
     
@@ -167,27 +168,37 @@ fun ControlScreen() {
                 .fillMaxHeight()
                 .width(with(density) { aimWidth.toDp() })
                 .align(Alignment.CenterEnd)
-                .pointerInput(isFreeView) {
-                    detectDragGestures { change, dragAmount ->
-                        if (dragAmount.x != 0f || dragAmount.y != 0f) {
-                            socketClient.send(
-                                ControlEvent(
-                                    action = ControlAction.AIM,
-                                    dx = dragAmount.x * aimSensitivity,
-                                    dy = dragAmount.y * aimSensitivity
+                .graphicsLayer { alpha = if (isInventoryOpen) 0.3f else 1f }
+                .pointerInput(isFreeView, isInventoryOpen) {
+                    if (!isInventoryOpen) {
+                        detectDragGestures { change, dragAmount ->
+                            if (dragAmount.x != 0f || dragAmount.y != 0f) {
+                                socketClient.send(
+                                    ControlEvent(
+                                        action = ControlAction.AIM,
+                                        dx = dragAmount.x * aimSensitivity,
+                                        dy = dragAmount.y * aimSensitivity
+                                    )
                                 )
-                            )
+                            }
+                            change.consume()
                         }
-                        change.consume()
                     }
                 }
         )
 
         // --- HUD OVERLAYS ---
 
-        // 3. FIRE (TOP LEFT)
-        Box(Modifier.align(Alignment.TopStart).padding(start = 40.dp, top = 40.dp)) {
-            GameButton(R.drawable.ic_fire, "FIRE", socketClient, 85.dp)
+        // HUD Content Wrapper (to dim buttons when inventory is open)
+        Box(modifier = Modifier.fillMaxSize().graphicsLayer { 
+            alpha = if (isInventoryOpen) 0.5f else 1f 
+        }) {
+            // 3. FIRE (TOP LEFT) - Stay active? Usually buttons are disabled in BGMI inventory
+            Box(Modifier.align(Alignment.TopStart).padding(start = 40.dp, top = 40.dp)) {
+                if (!isInventoryOpen) GameButton(R.drawable.ic_fire, "FIRE", socketClient, 85.dp)
+            }
+
+            // ... (Rest of existing buttons)
         }
 
         // 4. EYE (FREE VIEW) - TOP CENTER
@@ -293,9 +304,38 @@ fun ControlScreen() {
             GameButton(R.drawable.ic_reload, "RELOAD", socketClient, 65.dp)
         }
 
-        // 8. MEDKIT (BOTTOM LEFT)
-        Box(Modifier.align(Alignment.BottomStart).padding(start = 140.dp, bottom = 40.dp)) {
+        // 8. MEDKIT & BAG (BOTTOM LEFT)
+        Row(
+            modifier = Modifier.align(Alignment.BottomStart).padding(start = 140.dp, bottom = 40.dp),
+            horizontalArrangement = Arrangement.spacedBy(15.dp)
+        ) {
             GameButton(R.drawable.ic_hand, "CONSUMABLE_MEDKIT", socketClient, 65.dp)
+            
+            // BAG BUTTON
+            Box(
+                modifier = Modifier
+                    .size(60.dp)
+                    .background(Color.White.copy(alpha = 0.1f), RoundedCornerShape(8.dp))
+                    .border(1.dp, Color.White.copy(alpha = 0.3f), RoundedCornerShape(8.dp))
+                    .pointerInput(Unit) {
+                        detectTapGestures {
+                            isInventoryOpen = !isInventoryOpen
+                            socketClient.send(ControlEvent(ControlAction.BAG, if (isInventoryOpen) ButtonState.DOWN else ButtonState.UP))
+                        }
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(painterResource(R.drawable.ic_bag), "BAG", tint = Color.White, modifier = Modifier.size(35.dp))
+            }
+        }
+
+        // 📦 INVENTORY OVERLAY
+        androidx.compose.animation.AnimatedVisibility(
+            visible = isInventoryOpen,
+            enter = androidx.compose.animation.slideInHorizontally(initialOffsetX = { it }),
+            exit = androidx.compose.animation.slideOutHorizontally(targetOffsetX = { it })
+        ) {
+            InventoryOverlay(onClose = { isInventoryOpen = false })
         }
 
         // Settings Dialog / Overlay
@@ -366,6 +406,75 @@ fun ControlScreen() {
                             }
                         }
                     }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun InventoryOverlay(onClose: () -> Unit) {
+    Row(modifier = Modifier.fillMaxSize()) {
+        // Transparent clickable area on the left to close the inventory
+        Box(
+            modifier = Modifier
+                .weight(0.4f)
+                .fillMaxHeight()
+                .pointerInput(Unit) {
+                    detectTapGestures { onClose() }
+                }
+        )
+
+        // Right side panel (The actual inventory)
+        Box(
+            modifier = Modifier
+                .weight(0.6f)
+                .fillMaxHeight()
+                .background(
+                    Color.Black.copy(alpha = 0.85f),
+                    shape = RoundedCornerShape(topStart = 24.dp, bottomStart = 24.dp)
+                )
+                .border(
+                    width = 1.dp,
+                    color = Color.White.copy(alpha = 0.2f),
+                    shape = RoundedCornerShape(topStart = 24.dp, bottomStart = 24.dp)
+                )
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(24.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "INVENTORY",
+                        color = Color.White,
+                        style = MaterialTheme.typography.titleLarge
+                    )
+                    IconButton(onClick = onClose) {
+                        Icon(
+                            imageVector = Icons.Default.Visibility, // Use close icon if available, using Visibility as fallback
+                            contentDescription = "Close",
+                            tint = Color.White
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(16.dp))
+
+                // Grid or List of items
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .background(Color.White.copy(alpha = 0.05f), RoundedCornerShape(12.dp))
+                        .padding(12.dp)
+                ) {
+                    Text("Inventory contents would go here...", color = Color.Gray)
                 }
             }
         }

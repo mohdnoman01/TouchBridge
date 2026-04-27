@@ -4,51 +4,82 @@ import android.util.Log
 import com.example.torchbridge.core.model.ControlEvent
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import java.io.BufferedOutputStream
 import java.io.OutputStream
 import java.net.Socket
-import java.util.concurrent.Executors
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
 
 class SocketClient(private val ip: String, private val port: Int) {
+    @Volatile
     private var socket: Socket? = null
+    @Volatile
     private var outputStream: OutputStream? = null
-    private val executor = Executors.newSingleThreadExecutor()
+    
+    private val sendQueue = LinkedBlockingQueue<String>(100)
+    @Volatile
+    private var isRunning = true
+
+    private val json = Json {
+        encodeDefaults = false
+        ignoreUnknownKeys = true
+    }
+
+    private val senderThread = Thread {
+        while (isRunning) {
+            try {
+                val msg = sendQueue.poll(500, TimeUnit.MILLISECONDS)
+                if (msg != null) {
+                    val stream = outputStream
+                    if (stream != null) {
+                        stream.write((msg + "\n").toByteArray())
+                        stream.flush()
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("SOCKET", "Send error in thread", e)
+                if (isRunning) Thread.sleep(1000)
+            }
+        }
+    }.apply { 
+        name = "SocketSender"
+        priority = Thread.MAX_PRIORITY 
+        start()
+    }
 
     fun connect() {
-        executor.execute {
+        Thread {
             try {
-                if (socket == null || socket?.isClosed == true) {
+                if (socket == null || socket?.isClosed == true || socket?.isConnected == false) {
                     Log.d("SOCKET", "Connecting to $ip:$port")
-                    socket = Socket(ip, port)
-                    socket?.tcpNoDelay = true
-                    outputStream = socket?.getOutputStream()
+                    val newSocket = Socket(ip, port)
+                    newSocket.tcpNoDelay = true
+                    newSocket.sendBufferSize = 1024 * 8
+                    socket = newSocket
+                    outputStream = BufferedOutputStream(newSocket.getOutputStream())
                     Log.d("SOCKET", "Connected successfully")
                 }
             } catch (e: Exception) {
                 Log.e("SOCKET", "Connection failed", e)
             }
-        }
+        }.start()
     }
 
     fun send(msg: String) {
-        executor.execute {
-            try {
-                outputStream?.let {
-                    Log.d("SOCKET_SEND", msg)
-                    it.write((msg + "\n").toByteArray())
-                    it.flush()
-                } ?: Log.e("SOCKET", "OutputStream is null, cannot send. Attempting reconnect...")
-            } catch (e: Exception) {
-                Log.e("SOCKET", "Send error", e)
-            }
+        if (!sendQueue.offer(msg)) {
+            // If queue is full, drop the oldest for high-frequency events
+            sendQueue.poll()
+            sendQueue.offer(msg)
         }
     }
 
     fun send(event: ControlEvent) {
-        send(Json.encodeToString(event))
+        send(json.encodeToString(event))
     }
 
     fun disconnect() {
-        executor.execute {
+        isRunning = false
+        Thread {
             try {
                 outputStream?.close()
                 socket?.close()
@@ -59,7 +90,7 @@ class SocketClient(private val ip: String, private val port: Int) {
                 outputStream = null
                 socket = null
             }
-        }
+        }.start()
     }
 
     val isConnected: Boolean
